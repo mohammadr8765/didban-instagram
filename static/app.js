@@ -16,6 +16,13 @@ function toast(message) {
   const el = $("#toast"); el.textContent = message; el.classList.add("show");
   setTimeout(() => el.classList.remove("show"), 3000);
 }
+function avatarHtml(a) {
+  const letter = escapeHtml((a.username || "?").charAt(0).toUpperCase());
+  const img = a.avatar
+    ? `<img src="${escapeHtml(a.avatar)}" alt="" loading="lazy" onerror="this.remove()">`
+    : "";
+  return `<div class="avatar"><span>${letter}</span>${img}</div>`;
+}
 async function loadStatus() {
   try {
     const response = await fetch("/api/status", {cache:"no-store"});
@@ -30,8 +37,9 @@ async function loadStatus() {
       let detail = isError ? "بررسی ناموفق بود؛ بعداً دوباره امتحان کن." :
         (a.latest ? ("آخرین محتوای قابل‌شناسایی: " + timeText(a.latest.date_utc)) :
          (a.initialized ? "محتوای قابل‌شناسایی پیدا نشد." : "در انتظار بررسی اولیه…"));
-      return `<article class="account">
+      return `<article class="account ${isNew ? "is-new" : ""}">
         <span class="status-dot ${isNew ? "new" : (isError ? "error" : "")}" title="${isNew ? "محتوای جدید" : (isError ? "خطای بررسی" : "بدون مورد جدید")}"></span>
+        ${avatarHtml(a)}
         <div class="account-info">
           <div class="handle">@${escapeHtml(a.username)}</div>
           <div class="subline">${escapeHtml(detail)}</div>
@@ -81,4 +89,3 @@ if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
 }
 loadStatus();
 setInterval(loadStatus, 60000);
-    
