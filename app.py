@@ -30,6 +30,10 @@ MAX_POSTS_PER_PROFILE = int(os.getenv("MAX_POSTS_PER_PROFILE", "5"))
 # expire) and only fetched again if the file is missing.
 AVATAR_DIR = APP_DIR / "static" / "avatars"
 
+# Thumbnails of each profile's latest post (downloaded directly from the
+# Instagram CDN, so this costs no Apify credit).
+POST_DIR = APP_DIR / "static" / "posts"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -189,6 +193,34 @@ def refresh_avatars(usernames):
     logger.info("Avatars saved: %s of %s", saved, len(needed))
 
 
+def save_thumb(post):
+    """Download a post thumbnail to our server. Returns the file name or None."""
+    pic = post.get("displayUrl")
+    if not pic:
+        return None
+    try:
+        POST_DIR.mkdir(parents=True, exist_ok=True)
+        name = re.sub(r"[^A-Za-z0-9_-]", "_", post["shortCode"]) + ".jpg"
+        request = urllib.request.Request(pic, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            content = response.read()
+        if content:
+            (POST_DIR / name).write_bytes(content)
+            return name
+    except Exception:
+        logger.exception("Thumbnail download failed: %s", post.get("shortCode"))
+    return None
+
+
+def remove_thumb(name):
+    if not name:
+        return
+    try:
+        (POST_DIR / name).unlink()
+    except OSError:
+        pass
+
+
 def check_profiles():
     if not check_lock.acquire(blocking=False):
         logger.warning("A profile check is already running")
@@ -276,10 +308,21 @@ def check_profiles():
             latest = old.get("latest")
             if posts:
                 top = posts[0]
+                old_latest = latest or {}
+                thumb = None
+                if old_latest.get("shortcode") == top["shortCode"]:
+                    thumb = old_latest.get("thumb")
+                if not thumb or not (POST_DIR / thumb).exists():
+                    thumb = save_thumb(top)
+                old_thumb = old_latest.get("thumb")
+                if old_thumb and old_thumb != thumb:
+                    remove_thumb(old_thumb)
                 latest = {
                     "shortcode": top["shortCode"],
                     "date_utc": top.get("timestamp"),
                     "typename": top.get("type", ""),
+                    "caption": (top.get("caption") or "")[:140],
+                    "thumb": thumb,
                     "url": (
                         top.get("url")
                         or f"https://www.instagram.com/p/{top['shortCode']}/"
@@ -359,6 +402,11 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/explore")
+def explore():
+    return render_template("explore.html")
+
+
 @app.route("/api/status")
 def api_status():
     data = load_data()
@@ -379,6 +427,15 @@ def api_status():
         )
         item = {k: v for k, v in entry.items() if k != "seen"}
         item["avatar"] = avatar_url(username)
+        latest = item.get("latest")
+        if latest:
+            latest = dict(latest)
+            thumb = latest.pop("thumb", None)
+            if thumb and (POST_DIR / thumb).exists():
+                latest["thumb_url"] = f"/static/posts/{thumb}"
+            else:
+                latest["thumb_url"] = None
+            item["latest"] = latest
         result.append(item)
     return jsonify({
         "accounts": result,
@@ -446,4 +503,4 @@ if __name__ == "__main__":
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "5000")),
         debug=False,
-)
+    )
