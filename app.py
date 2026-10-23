@@ -3,18 +3,27 @@ import logging
 import os
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template
-import instaloader
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_FILE = APP_DIR / "data.json"
 ACCOUNTS_FILE = APP_DIR / "accounts.json"
-CHECK_INTERVAL = max(
-    900, int(os.getenv("CHECK_INTERVAL_SECONDS", "1800"))
-)
+
+APIFY_TOKEN = os.getenv("APIFY_TOKEN", "")
+APIFY_ACTOR = os.getenv("APIFY_ACTOR", "apify~instagram-scraper")
+
+# Automatic check interval (default: once a day, minimum: 1 hour).
+CHECK_INTERVAL = max(3600, int(os.getenv("CHECK_INTERVAL_SECONDS", "86400")))
+
+# Only posts newer than this are requested from Apify (keeps cost low).
+# Keep it larger than the check interval (e.g. "2 days" for daily checks).
+LOOKBACK = os.getenv("LOOKBACK", "2 days")
+MAX_POSTS_PER_PROFILE = int(os.getenv("MAX_POSTS_PER_PROFILE", "5"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
+
 check_lock = threading.Lock()
 state_lock = threading.Lock()
 background_started = False
@@ -84,180 +94,194 @@ def save_data(data):
     write_json(DATA_FILE, data)
 
 
-def make_loader():
-    return instaloader.Instaloader(
-        quiet=True,
-        download_pictures=False,
-        download_videos=False,
-        download_video_thumbnails=False,
-        download_geotags=False,
-        download_comments=False,
-        save_metadata=False,
-        compress_json=False,
-    )
+def profile_url(username):
+    return f"https://www.instagram.com/{username}/"
 
 
-def is_rate_limit(exc):
-    message = f"{type(exc).__name__}: {exc}".lower()
-    return (
-        "429" in message
-        or "too many requests" in message
-        or "please wait a few minutes" in message
-        or "ratelimit" in message
-        or "rate limit" in message
+def fetch_from_apify(usernames):
+    """Run the Apify Instagram scraper once for all profiles and return items."""
+    payload = {
+        "directUrls": [profile_url(u) for u in usernames],
+        "resultsType": "posts",
+        "resultsLimit": MAX_POSTS_PER_PROFILE,
+        "onlyPostsNewerThan": LOOKBACK,
+        "addParentData": False,
+    }
+    url = (
+        f"https://api.apify.com/v2/acts/{APIFY_ACTOR}"
+        f"/run-sync-get-dataset-items?timeout=280"
     )
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {APIFY_TOKEN}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=300) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def check_profiles():
     if not check_lock.acquire(blocking=False):
         logger.warning("A profile check is already running")
         return None
-
     try:
         data = load_data()
         profiles = data.setdefault("profiles", {})
-        errors = []
-        successes = 0
-        rate_limited = False
-        loader = make_loader()
         usernames = accounts()
 
-        for index, username in enumerate(usernames):
-            old = profiles.get(username, {})
+        def finish(errors, successes, rate_limited=False):
+            data["last_check"] = now_utc()
+            data["last_error"] = "; ".join(errors) if errors else None
+            data["last_success_count"] = successes
+            data["last_error_count"] = len(errors)
+            data["rate_limited"] = rate_limited
+            save_data(data)
+            return data
 
-            if rate_limited:
+        if not APIFY_TOKEN:
+            msg = "APIFY_TOKEN is not set in Render environment variables"
+            logger.error(msg)
+            return finish([msg], 0)
+
+        try:
+            items = fetch_from_apify(usernames)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="ignore")[:300]
+            logger.error("Apify HTTP %s: %s", exc.code, body)
+            if exc.code in (402, 403):
+                msg = "Apify credit is finished or access denied"
+            else:
+                msg = f"Apify error {exc.code}"
+            for username in usernames:
+                old = profiles.get(username, {})
                 profiles[username] = {
                     **old,
                     "username": username,
-                    "url": f"https://www.instagram.com/{username}/",
+                    "url": profile_url(username),
                     "status": "error",
-                    "error": (
-                        "بررسی متوقف شد؛ اینستاگرام درخواست‌ها را محدود کرده است."
-                    ),
+                    "error": "بررسی ناموفق بود؛ جزئیات را در Render Logs ببینید.",
+                    "checked_at": now_utc(),
                 }
+            return finish([msg], 0)
+        except Exception as exc:
+            logger.exception("Apify request failed")
+            for username in usernames:
+                old = profiles.get(username, {})
+                profiles[username] = {
+                    **old,
+                    "username": username,
+                    "url": profile_url(username),
+                    "status": "error",
+                    "error": "بررسی ناموفق بود؛ جزئیات را در Render Logs ببینید.",
+                    "checked_at": now_utc(),
+                }
+            return finish([f"{type(exc).__name__}: {str(exc)[:200]}"], 0)
+
+        if items:
+            logger.info("Apify returned %s items; first keys: %s",
+                        len(items), sorted(items[0].keys())[:20])
+
+        # Group posts by owner username.
+        by_user = {}
+        error_items = 0
+        for item in items:
+            if not isinstance(item, dict):
                 continue
+            if item.get("error") and not item.get("shortCode"):
+                error_items += 1
+                logger.warning("Apify item error: %s", str(item)[:200])
+                continue
+            owner = (item.get("ownerUsername") or "").lower()
+            if owner and item.get("shortCode"):
+                by_user.setdefault(owner, []).append(item)
 
-            try:
-                profile = instaloader.Profile.from_username(
-                    loader.context, username
-                )
+        for username in usernames:
+            old = profiles.get(username, {})
+            posts = by_user.get(username.lower(), [])
+            posts.sort(key=lambda p: p.get("timestamp") or "", reverse=True)
 
-                latest = None
-                for post in profile.get_posts():
-                    latest = {
-                        "shortcode": post.shortcode,
-                        "date_utc": post.date_utc.replace(
-                            tzinfo=timezone.utc
-                        ).isoformat(),
-                        "typename": getattr(post, "typename", ""),
-                        "url": (
-                            f"https://www.instagram.com/p/"
-                            f"{post.shortcode}/"
-                        ),
-                    }
-                    break
+            seen = list(old.get("seen", []))
+            initialized = old.get("initialized", False)
+            new_posts = [p for p in posts if p["shortCode"] not in seen]
 
-                old_latest = old.get("latest")
-                initialized = old.get("initialized", False)
-                is_new = bool(
-                    initialized
-                    and latest
-                    and old_latest
-                    and latest["shortcode"] != old_latest["shortcode"]
-                )
-
-                profiles[username] = {
-                    "username": username,
-                    "url": f"https://www.instagram.com/{username}/",
-                    "latest": latest,
-                    "has_new": bool(old.get("has_new", False) or is_new),
-                    "initialized": True,
-                    "checked_at": now_utc(),
-                    "status": "ok",
-                    "error": None,
-                }
-                successes += 1
-                logger.info("Profile check succeeded: %s", username)
-
-            except Exception as exc:
-                detail = f"{type(exc).__name__}: {str(exc)[:250]}"
-                errors.append(f"{username}: {detail}")
-                logger.exception("Profile check failed: %s", username)
-
-                profiles[username] = {
-                    **old,
-                    "username": username,
-                    "url": f"https://www.instagram.com/{username}/",
-                    "status": "error",
-                    "error": (
-                        "بررسی ناموفق بود؛ جزئیات را در Render Logs ببینید."
+            latest = old.get("latest")
+            if posts:
+                top = posts[0]
+                latest = {
+                    "shortcode": top["shortCode"],
+                    "date_utc": top.get("timestamp"),
+                    "typename": top.get("type", ""),
+                    "url": (
+                        top.get("url")
+                        or f"https://www.instagram.com/p/{top['shortCode']}/"
                     ),
-                    "checked_at": now_utc(),
                 }
 
-                if is_rate_limit(exc):
-                    rate_limited = True
-                    logger.error(
-                        "Instagram rate limit detected. "
-                        "Remaining profiles will be skipped."
-                    )
-                    errors.append("Instagram rate limit detected")
+            for p in posts:
+                if p["shortCode"] not in seen:
+                    seen.append(p["shortCode"])
 
-            # Pause between successful account checks.
-            if not rate_limited and index < len(usernames) - 1:
-                time.sleep(5)
+            profiles[username] = {
+                "username": username,
+                "url": profile_url(username),
+                "latest": latest,
+                "has_new": bool(
+                    old.get("has_new", False) or (initialized and new_posts)
+                ),
+                "initialized": True,
+                "seen": seen[-100:],
+                "checked_at": now_utc(),
+                "status": "ok",
+                "error": None,
+            }
 
-        data["last_check"] = now_utc()
-        data["last_error"] = "; ".join(errors) if errors else None
-        data["last_success_count"] = successes
-        data["last_error_count"] = len(errors)
-        data["rate_limited"] = rate_limited
-        save_data(data)
-
-        logger.info(
-            "Check finished: %s successful, %s errors, rate_limited=%s",
-            successes,
-            len(errors),
-            rate_limited,
-        )
-        return data
-
+        errors = []
+        if error_items:
+            errors.append(f"{error_items} profile(s) returned an error from Apify")
+        successes = len(usernames)
+        logger.info("Check finished: %s profiles, %s errors", successes, len(errors))
+        return finish(errors, successes)
     finally:
         check_lock.release()
 
 
 def background_loop():
-    # Wait briefly after application startup before the first check.
+    # Wait briefly after startup, then check whenever the last check is old.
     time.sleep(15)
-
     while True:
         try:
-            logger.info("Starting scheduled profile check")
-            check_profiles()
+            last = load_data().get("last_check")
+            due = True
+            if last:
+                age = (
+                    datetime.now(timezone.utc) - datetime.fromisoformat(last)
+                ).total_seconds()
+                due = age >= CHECK_INTERVAL
+            if due:
+                logger.info("Starting scheduled profile check")
+                check_profiles()
         except Exception:
             logger.exception("Scheduled profile check crashed")
-
-        time.sleep(CHECK_INTERVAL)
+        time.sleep(600)
 
 
 def start_background_thread():
     global background_started
-
     with state_lock:
         if background_started:
             return
         background_started = True
-
     thread = threading.Thread(
         target=background_loop,
         name="profile-checker",
         daemon=True,
     )
     thread.start()
-    logger.info(
-        "Background checker started; interval=%s seconds",
-        CHECK_INTERVAL,
-    )
+    logger.info("Background checker started; interval=%s seconds", CHECK_INTERVAL)
 
 
 @app.route("/")
@@ -269,13 +293,12 @@ def index():
 def api_status():
     data = load_data()
     result = []
-
     for username in accounts():
         entry = data.get("profiles", {}).get(
             username,
             {
                 "username": username,
-                "url": f"https://www.instagram.com/{username}/",
+                "url": profile_url(username),
                 "latest": None,
                 "has_new": False,
                 "initialized": False,
@@ -284,8 +307,7 @@ def api_status():
                 "checked_at": None,
             },
         )
-        result.append(entry)
-
+        result.append({k: v for k, v in entry.items() if k != "seen"})
     return jsonify({
         "accounts": result,
         "last_check": data.get("last_check"),
@@ -300,7 +322,6 @@ def api_status():
 @app.post("/api/check")
 def api_check():
     data = check_profiles()
-
     if data is None:
         return jsonify({
             "ok": False,
@@ -309,7 +330,6 @@ def api_check():
 
     successes = data.get("last_success_count", 0)
     errors = data.get("last_error_count", 0)
-
     if successes == 0 and errors > 0:
         return jsonify({
             "ok": False,
@@ -333,13 +353,11 @@ def api_check():
 def api_clear(username):
     if username not in accounts():
         return jsonify({"ok": False, "error": "Unknown account"}), 404
-
     with state_lock:
         data = load_data()
         if username in data.get("profiles", {}):
             data["profiles"][username]["has_new"] = False
             save_data(data)
-
     return jsonify({"ok": True})
 
 
@@ -351,11 +369,10 @@ def manifest():
 # Also starts when the app is launched by Gunicorn.
 start_background_thread()
 
-
 if __name__ == "__main__":
     app.run(
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "5000")),
         debug=False,
-)
-                
+            )
+    
