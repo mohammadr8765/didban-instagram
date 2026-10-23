@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <meta name="description" content="داشبورد اختصاصی بررسی پست‌های جدید پیج‌های اینستاگرام">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <title>دیدبان اینستاگرام</title>
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <div class="brand-mark">◉</div>
+      <div class="brand-copy">
+        <h1>دیدبان اینستاگرام</h1>
+        <p>فهرست پیج‌ها و تشخیص محتوای جدید</p>
+      </div>
+      <button id="installBtn" class="ghost hidden" type="button">نصب برنامه</button>
+    </header>
+
+    <section class="summary">
+      <div>
+        <span class="eyebrow">فهرست اختصاصی تو</span>
+        <h2><span id="accountCount">۸</span> پیج تحت نظر</h2>
+        <p id="lastCheck">هنوز بررسی‌ای ثبت نشده</p>
+      </div>
+      <button id="checkBtn" class="primary" type="button">بررسی دوباره</button>
+    </section>
+
+    <div class="legend">
+      <span class="legend-dot red"></span><span>محتوای جدید شناسایی شده</span>
+      <span class="legend-dot muted"></span><span>مورد جدیدی ثبت نشده</span>
+    </div>
+
+    <section id="accounts" class="account-list" aria-live="polite">
+      <div class="loading">در حال بارگذاری فهرست…</div>
+    </section>
+
+    <footer>
+      <p>بررسی خودکار ممکن است به‌دلیل محدودیت‌های اینستاگرام موقتاً ناموفق شود.</p>
+      <p id="statusLine">اتصال به سرویس در حال بررسی است.</p>
+    </footer>
+  </main>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

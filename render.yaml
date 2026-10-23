@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: didban-instagram-watchlist
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --threads 4 --timeout 180
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: CHECK_INTERVAL_SECONDS
+        value: 1800
