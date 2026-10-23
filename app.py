@@ -1,4 +1,3 @@
-
 import json
 import logging
 import os
@@ -24,7 +23,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
-lock = threading.Lock()
+check_lock = threading.Lock()
+state_lock = threading.Lock()
 background_started = False
 
 DEFAULT_ACCOUNTS = [
@@ -37,6 +37,10 @@ DEFAULT_ACCOUNTS = [
     "picopry",
     "maarstv",
 ]
+
+
+def now_utc():
+    return datetime.now(timezone.utc).isoformat()
 
 
 def read_json(path, fallback):
@@ -66,7 +70,13 @@ def accounts():
 def load_data():
     return read_json(
         DATA_FILE,
-        {"profiles": {}, "last_check": None, "last_error": None},
+        {
+            "profiles": {},
+            "last_check": None,
+            "last_error": None,
+            "last_success_count": 0,
+            "last_error_count": 0,
+        },
     )
 
 
@@ -87,16 +97,45 @@ def make_loader():
     )
 
 
+def is_rate_limit(exc):
+    message = f"{type(exc).__name__}: {exc}".lower()
+    return (
+        "429" in message
+        or "too many requests" in message
+        or "please wait a few minutes" in message
+        or "ratelimit" in message
+        or "rate limit" in message
+    )
+
+
 def check_profiles():
-    with lock:
+    if not check_lock.acquire(blocking=False):
+        logger.warning("A profile check is already running")
+        return None
+
+    try:
         data = load_data()
         profiles = data.setdefault("profiles", {})
         errors = []
         successes = 0
+        rate_limited = False
         loader = make_loader()
+        usernames = accounts()
 
-        for username in accounts():
+        for index, username in enumerate(usernames):
             old = profiles.get(username, {})
+
+            if rate_limited:
+                profiles[username] = {
+                    **old,
+                    "username": username,
+                    "url": f"https://www.instagram.com/{username}/",
+                    "status": "error",
+                    "error": (
+                        "بررسی متوقف شد؛ اینستاگرام درخواست‌ها را محدود کرده است."
+                    ),
+                }
+                continue
 
             try:
                 profile = instaloader.Profile.from_username(
@@ -133,7 +172,7 @@ def check_profiles():
                     "latest": latest,
                     "has_new": bool(old.get("has_new", False) or is_new),
                     "initialized": True,
-                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "checked_at": now_utc(),
                     "status": "ok",
                     "error": None,
                 }
@@ -143,6 +182,7 @@ def check_profiles():
             except Exception as exc:
                 detail = f"{type(exc).__name__}: {str(exc)[:250]}"
                 errors.append(f"{username}: {detail}")
+                logger.exception("Profile check failed: %s", username)
 
                 profiles[username] = {
                     **old,
@@ -150,38 +190,52 @@ def check_profiles():
                     "url": f"https://www.instagram.com/{username}/",
                     "status": "error",
                     "error": (
-                        "بررسی ناموفق بود؛ جزئیات در گزارش‌های Render ثبت شده."
+                        "بررسی ناموفق بود؛ جزئیات را در Render Logs ببینید."
                     ),
-                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "checked_at": now_utc(),
                 }
 
-                logger.exception("Profile check failed: %s", username)
+                if is_rate_limit(exc):
+                    rate_limited = True
+                    logger.error(
+                        "Instagram rate limit detected. "
+                        "Remaining profiles will be skipped."
+                    )
+                    errors.append("Instagram rate limit detected")
 
-            time.sleep(2)
+            # Pause between successful account checks.
+            if not rate_limited and index < len(usernames) - 1:
+                time.sleep(5)
 
-        data["last_check"] = datetime.now(timezone.utc).isoformat()
+        data["last_check"] = now_utc()
         data["last_error"] = "; ".join(errors) if errors else None
         data["last_success_count"] = successes
         data["last_error_count"] = len(errors)
+        data["rate_limited"] = rate_limited
         save_data(data)
 
         logger.info(
-            "Check finished: %s successful, %s failed",
+            "Check finished: %s successful, %s errors, rate_limited=%s",
             successes,
             len(errors),
+            rate_limited,
         )
         return data
 
+    finally:
+        check_lock.release()
+
 
 def background_loop():
-    time.sleep(10)
+    # Wait briefly after application startup before the first check.
+    time.sleep(15)
 
     while True:
         try:
             logger.info("Starting scheduled profile check")
             check_profiles()
         except Exception:
-            logger.exception("Scheduled check crashed")
+            logger.exception("Scheduled profile check crashed")
 
         time.sleep(CHECK_INTERVAL)
 
@@ -189,10 +243,11 @@ def background_loop():
 def start_background_thread():
     global background_started
 
-    if background_started:
-        return
+    with state_lock:
+        if background_started:
+            return
+        background_started = True
 
-    background_started = True
     thread = threading.Thread(
         target=background_loop,
         name="profile-checker",
@@ -237,47 +292,49 @@ def api_status():
         "last_error": data.get("last_error"),
         "last_success_count": data.get("last_success_count", 0),
         "last_error_count": data.get("last_error_count", 0),
+        "rate_limited": data.get("rate_limited", False),
         "check_interval_seconds": CHECK_INTERVAL,
     })
 
 
 @app.post("/api/check")
 def api_check():
-    try:
-        data = check_profiles()
-        successes = data.get("last_success_count", 0)
-        errors = data.get("last_error_count", 0)
+    data = check_profiles()
 
-        if successes == 0 and errors > 0:
-            return jsonify({
-                "ok": False,
-                "message": "بررسی همه حساب‌ها ناموفق بود.",
-                "last_check": data.get("last_check"),
-                "successes": successes,
-                "errors": errors,
-            }), 502
-
+    if data is None:
         return jsonify({
-            "ok": True,
+            "ok": False,
+            "message": "بررسی دیگری در حال اجراست؛ کمی صبر کنید.",
+        }), 409
+
+    successes = data.get("last_success_count", 0)
+    errors = data.get("last_error_count", 0)
+
+    if successes == 0 and errors > 0:
+        return jsonify({
+            "ok": False,
+            "message": "بررسی ناموفق بود؛ جزئیات را در Render Logs ببینید.",
             "last_check": data.get("last_check"),
             "successes": successes,
             "errors": errors,
-        })
+            "rate_limited": data.get("rate_limited", False),
+        }), 502
 
-    except Exception:
-        logger.exception("Manual check crashed")
-        return jsonify({
-            "ok": False,
-            "message": "خطای داخلی هنگام بررسی حساب‌ها",
-        }), 500
+    return jsonify({
+        "ok": True,
+        "last_check": data.get("last_check"),
+        "successes": successes,
+        "errors": errors,
+        "rate_limited": data.get("rate_limited", False),
+    })
 
 
-@app.route("/api/clear/<username>", methods=["POST"])
+@app.post("/api/clear/<username>")
 def api_clear(username):
     if username not in accounts():
         return jsonify({"ok": False, "error": "Unknown account"}), 404
 
-    with lock:
+    with state_lock:
         data = load_data()
         if username in data.get("profiles", {}):
             data["profiles"][username]["has_new"] = False
@@ -291,7 +348,7 @@ def manifest():
     return app.send_static_file("manifest.json")
 
 
-# Runs under Gunicorn as well as when started directly.
+# Also starts when the app is launched by Gunicorn.
 start_background_thread()
 
 
@@ -300,5 +357,5 @@ if __name__ == "__main__":
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "5000")),
         debug=False,
-    )
-    
+)
+                
