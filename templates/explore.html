@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <title>آخرین پست‌ها | دیدبان اینستاگرام</title>
+  <style>
+    .nav{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 0 18px}
+    .nav h1{font-size:19px;margin:0}
+    .back{text-decoration:none;display:inline-block}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
+    .tile{position:relative;display:block;aspect-ratio:1/1;overflow:hidden;border-radius:6px;background:linear-gradient(140deg,#26324d,#141b2d);color:#fff;text-decoration:none}
+    .tile img.thumb{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+    .tile .ph{position:absolute;inset:0;display:grid;place-items:center;font-size:34px;font-weight:800;color:#a6b0c5}
+    .tile .shade{position:absolute;left:0;right:0;bottom:0;padding:18px 6px 6px;background:linear-gradient(transparent,rgba(0,0,0,.75));font-size:11px;font-weight:700;direction:ltr;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .tile .badge{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.55);border-radius:8px;padding:2px 6px;font-size:10px}
+    .tile .dot{position:absolute;top:7px;left:7px;width:11px;height:11px;border-radius:50%;background:var(--red);box-shadow:0 0 0 3px #ff4d5d44}
+    .note{color:var(--muted);font-size:12px;line-height:1.9;margin:14px 2px}
+    @media(min-width:560px){.grid{grid-template-columns:repeat(4,1fr);gap:6px}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="nav">
+      <h1>آخرین پست‌ها</h1>
+      <a class="ghost back" href="/">← فهرست پیج‌ها</a>
+    </div>
+    <section id="grid" class="grid" aria-live="polite"></section>
+    <p id="note" class="note">در حال بارگذاری…</p>
+  </main>
+  <script>
+    const $ = (s) => document.querySelector(s);
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    }
+    function typeLabel(t) {
+      const x = String(t || "").toLowerCase();
+      if (x === "video") return "ویدیو";
+      if (x === "sidecar") return "آلبوم";
+      return "";
+    }
+    async function load() {
+      try {
+        const r = await fetch("/api/status", {cache: "no-store"});
+        if (!r.ok) throw new Error("status");
+        const data = await r.json();
+        const withPost = data.accounts
+          .filter(a => a.latest && a.latest.url)
+          .sort((a, b) => String(b.latest.date_utc || "").localeCompare(String(a.latest.date_utc || "")));
+        const missing = data.accounts.length - withPost.length;
+        $("#grid").innerHTML = withPost.map(a => {
+          const l = a.latest;
+          const badge = typeLabel(l.typename);
+          const thumb = l.thumb_url
+            ? `<img class="thumb" src="${esc(l.thumb_url)}" alt="" loading="lazy" onerror="this.remove()">`
+            : "";
+          return `<a class="tile" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.caption || "")}">
+            <div class="ph">${esc((a.username || "?").charAt(0).toUpperCase())}</div>
+            ${thumb}
+            ${a.has_new ? '<span class="dot"></span>' : ""}
+            ${badge ? `<span class="badge">${badge}</span>` : ""}
+            <div class="shade">@${esc(a.username)}</div>
+          </a>`;
+        }).join("");
+        const parts = [];
+        if (!withPost.length) parts.push("هنوز پستی ثبت نشده. بعد از اینکه پیج‌ها پست جدید بذارن اینجا نشون داده می‌شه.");
+        if (missing > 0 && withPost.length) parts.push(missing + " پیج هنوز پست جدیدی نداشتن و اینجا نیستن.");
+        $("#note").textContent = parts.join(" ");
+      } catch (e) {
+        $("#note").textContent = "به سرور وصل نشدیم.";
+      }
+    }
+    load();
+  </script>
+</body>
+</html>
