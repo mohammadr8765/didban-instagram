@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -24,6 +25,10 @@ CHECK_INTERVAL = max(3600, int(os.getenv("CHECK_INTERVAL_SECONDS", "86400")))
 # Keep it larger than the check interval (e.g. "2 days" for daily checks).
 LOOKBACK = os.getenv("LOOKBACK", "2 days")
 MAX_POSTS_PER_PROFILE = int(os.getenv("MAX_POSTS_PER_PROFILE", "5"))
+
+# Profile pictures are downloaded once to our own server (Instagram links
+# expire) and only fetched again if the file is missing.
+AVATAR_DIR = APP_DIR / "static" / "avatars"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -98,15 +103,22 @@ def profile_url(username):
     return f"https://www.instagram.com/{username}/"
 
 
-def fetch_from_apify(usernames):
+def fetch_from_apify(usernames, details=False):
     """Run the Apify Instagram scraper once for all profiles and return items."""
-    payload = {
-        "directUrls": [profile_url(u) for u in usernames],
-        "resultsType": "posts",
-        "resultsLimit": MAX_POSTS_PER_PROFILE,
-        "onlyPostsNewerThan": LOOKBACK,
-        "addParentData": False,
-    }
+    if details:
+        payload = {
+            "directUrls": [profile_url(u) for u in usernames],
+            "resultsType": "details",
+            "resultsLimit": 1,
+        }
+    else:
+        payload = {
+            "directUrls": [profile_url(u) for u in usernames],
+            "resultsType": "posts",
+            "resultsLimit": MAX_POSTS_PER_PROFILE,
+            "onlyPostsNewerThan": LOOKBACK,
+            "addParentData": False,
+        }
     url = (
         f"https://api.apify.com/v2/acts/{APIFY_ACTOR}"
         f"/run-sync-get-dataset-items?timeout=280"
@@ -122,6 +134,59 @@ def fetch_from_apify(usernames):
     )
     with urllib.request.urlopen(request, timeout=300) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def avatar_file(username):
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", username)
+    return AVATAR_DIR / f"{safe}.jpg"
+
+
+def avatar_url(username):
+    path = avatar_file(username)
+    if path.exists() and path.stat().st_size > 0:
+        return f"/static/avatars/{path.name}?v={int(path.stat().st_mtime)}"
+    return None
+
+
+def refresh_avatars(usernames):
+    """Download profile pictures that are missing."""
+    needed = []
+    for username in usernames:
+        path = avatar_file(username)
+        if not path.exists() or path.stat().st_size == 0:
+            needed.append(username)
+    if not needed:
+        return
+
+    try:
+        AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+        items = fetch_from_apify(needed, details=True)
+    except Exception:
+        logger.exception("Avatar fetch from Apify failed")
+        return
+
+    wanted = {u.lower(): u for u in needed}
+    saved = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        owner = (item.get("username") or "").lower()
+        pic = item.get("profilePicUrlHD") or item.get("profilePicUrl")
+        username = wanted.get(owner)
+        if not username or not pic:
+            continue
+        try:
+            request = urllib.request.Request(
+                pic, headers={"User-Agent": "Mozilla/5.0"}
+            )
+            with urllib.request.urlopen(request, timeout=20) as response:
+                content = response.read()
+            if content:
+                avatar_file(username).write_bytes(content)
+                saved += 1
+        except Exception:
+            logger.exception("Avatar download failed: %s", username)
+    logger.info("Avatars saved: %s of %s", saved, len(needed))
 
 
 def check_profiles():
@@ -244,7 +309,12 @@ def check_profiles():
             errors.append(f"{error_items} profile(s) returned an error from Apify")
         successes = len(usernames)
         logger.info("Check finished: %s profiles, %s errors", successes, len(errors))
-        return finish(errors, successes)
+        result = finish(errors, successes)
+        try:
+            refresh_avatars(usernames)
+        except Exception:
+            logger.exception("Avatar refresh crashed")
+        return result
     finally:
         check_lock.release()
 
@@ -307,7 +377,9 @@ def api_status():
                 "checked_at": None,
             },
         )
-        result.append({k: v for k, v in entry.items() if k != "seen"})
+        item = {k: v for k, v in entry.items() if k != "seen"}
+        item["avatar"] = avatar_url(username)
+        result.append(item)
     return jsonify({
         "accounts": result,
         "last_check": data.get("last_check"),
@@ -374,5 +446,4 @@ if __name__ == "__main__":
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "5000")),
         debug=False,
-            )
-    
+)
