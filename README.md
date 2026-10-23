@@ -1,2 +1,0 @@
-# didban-instagram
-Instagram Watchlist
