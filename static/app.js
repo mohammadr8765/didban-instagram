@@ -1,8 +1,20 @@
 const $ = (s) => document.querySelector(s);
 const list = $("#accounts");
 const checkBtn = $("#checkBtn");
+const READ_KEY = "didban_read_v1";
 let installPrompt = null;
+let accountsCache = [];
 
+function loadRead() {
+  try { return JSON.parse(localStorage.getItem(READ_KEY) || "null"); } catch { return null; }
+}
+function saveRead(map) {
+  try { localStorage.setItem(READ_KEY, JSON.stringify(map)); } catch {}
+}
+function latestTs(a) {
+  const t = a.latest && a.latest.date_utc ? Date.parse(a.latest.date_utc) : NaN;
+  return Number.isNaN(t) ? 0 : t;
+}
 function timeText(value) {
   if (!value) return "هنوز بررسی نشده";
   const d = new Date(value);
@@ -28,11 +40,24 @@ async function loadStatus() {
     const response = await fetch("/api/status", {cache:"no-store"});
     if (!response.ok) throw new Error("status");
     const data = await response.json();
+    accountsCache = data.accounts;
+
+    let readMap = loadRead();
+    const firstRun = !readMap;
+    if (!readMap) readMap = {};
+    const baseline = Date.now() - 24 * 3600 * 1000;
+    data.accounts.forEach(a => {
+      if (readMap[a.username] === undefined) {
+        readMap[a.username] = firstRun ? baseline : latestTs(a);
+      }
+    });
+    saveRead(readMap);
+
     $("#accountCount").textContent = new Intl.NumberFormat("fa-IR").format(data.accounts.length);
     $("#lastCheck").textContent = data.last_check ? timeText(data.last_check) : "هنوز بررسی اولیه انجام نشده";
     $("#statusLine").textContent = data.last_error ? "بعضی پیج‌ها بررسی نشدند؛ اینستاگرام ممکن است محدودیت گذاشته باشد." : "اتصال داشبورد برقرار است.";
     list.innerHTML = data.accounts.map(a => {
-      const isNew = !!a.has_new;
+      const isNew = latestTs(a) > readMap[a.username];
       const isError = a.status === "error";
       let detail = isError ? "بررسی ناموفق بود؛ بعداً دوباره امتحان کن." :
         (a.latest ? ("آخرین محتوای قابل‌شناسایی: " + timeText(a.latest.date_utc)) :
@@ -71,10 +96,14 @@ checkBtn.addEventListener("click", async () => {
 list.addEventListener("click", async (event) => {
   const btn = event.target.closest("[data-clear]");
   if (!btn) return;
-  try {
-    await fetch("/api/clear/" + encodeURIComponent(btn.dataset.clear), {method:"POST"});
-    await loadStatus(); toast("علامت محتوای جدید پاک شد.");
-  } catch { toast("پاک‌کردن وضعیت انجام نشد."); }
+  const username = btn.dataset.clear;
+  const acc = accountsCache.find(a => a.username === username);
+  const readMap = loadRead() || {};
+  readMap[username] = Math.max(readMap[username] || 0, acc ? latestTs(acc) : 0);
+  saveRead(readMap);
+  fetch("/api/clear/" + encodeURIComponent(username), {method:"POST"}).catch(() => {});
+  await loadStatus();
+  toast("علامت محتوای جدید پاک شد.");
 });
 window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault(); installPrompt = e; $("#installBtn").classList.remove("hidden");
