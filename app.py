@@ -222,9 +222,7 @@ def remove_thumb(name):
         (POST_DIR / name).unlink()
     except OSError:
         pass
-
-
-def check_profiles():
+        def check_profiles():
     if not check_lock.acquire(blocking=False):
         logger.warning("A profile check is already running")
         return None
@@ -292,6 +290,9 @@ def check_profiles():
             if not isinstance(item, dict):
                 continue
             if item.get("error") and not item.get("shortCode"):
+                if item.get("error") == "no_items":
+                    # Profile simply has no recent posts (or is private).
+                    continue
                 error_items += 1
                 logger.warning("Apify item error: %s", str(item)[:200])
                 continue
@@ -393,9 +394,7 @@ def start_background_thread():
     )
     thread.start()
     logger.info("Background checker started; interval=%s seconds", CHECK_INTERVAL)
-
-
-@app.route("/")
+    @app.route("/")
 def index():
     return render_template("index.html")
 
@@ -469,4 +468,82 @@ def api_status():
                 "checked_at": None,
             },
         )
-        item = {k: v for k, v in
+        item = {k: v for k, v in entry.items() if k != "seen"}
+        item["avatar"] = avatar_url(username)
+        latest = item.get("latest")
+        if latest:
+            latest = dict(latest)
+            thumb = latest.pop("thumb", None)
+            if thumb and (POST_DIR / thumb).exists():
+                latest["thumb_url"] = f"/static/posts/{thumb}"
+            else:
+                latest["thumb_url"] = None
+            item["latest"] = latest
+        result.append(item)
+    return jsonify({
+        "accounts": result,
+        "last_check": data.get("last_check"),
+        "last_error": data.get("last_error"),
+        "last_success_count": data.get("last_success_count", 0),
+        "last_error_count": data.get("last_error_count", 0),
+        "rate_limited": data.get("rate_limited", False),
+        "check_interval_seconds": CHECK_INTERVAL,
+    })
+
+
+@app.post("/api/check")
+def api_check():
+    data = check_profiles()
+    if data is None:
+        return jsonify({
+            "ok": False,
+            "message": "بررسی دیگری در حال اجراست؛ کمی صبر کنید.",
+        }), 409
+
+    successes = data.get("last_success_count", 0)
+    errors = data.get("last_error_count", 0)
+    if successes == 0 and errors > 0:
+        return jsonify({
+            "ok": False,
+            "message": "بررسی ناموفق بود؛ جزئیات را در Render Logs ببینید.",
+            "last_check": data.get("last_check"),
+            "successes": successes,
+            "errors": errors,
+            "rate_limited": data.get("rate_limited", False),
+        }), 502
+
+    return jsonify({
+        "ok": True,
+        "last_check": data.get("last_check"),
+        "successes": successes,
+        "errors": errors,
+        "rate_limited": data.get("rate_limited", False),
+    })
+
+
+@app.post("/api/clear/<username>")
+def api_clear(username):
+    if username not in accounts():
+        return jsonify({"ok": False, "error": "Unknown account"}), 404
+    with state_lock:
+        data = load_data()
+        if username in data.get("profiles", {}):
+            data["profiles"][username]["has_new"] = False
+            save_data(data)
+    return jsonify({"ok": True})
+
+
+@app.get("/manifest.json")
+def manifest():
+    return app.send_static_file("manifest.json")
+
+
+# Also starts when the app is launched by Gunicorn.
+start_background_thread()
+
+if __name__ == "__main__":
+    app.run(
+        host=os.getenv("HOST", "127.0.0.1"),
+        port=int(os.getenv("PORT", "5000")),
+        debug=False,
+)
