@@ -156,7 +156,7 @@ def avatar_url(username):
 
 
 def refresh_avatars(usernames):
-    """Download profile pictures that are missing."""
+    """Download profile pictures that are missing or older than AVATAR_MAX_AGE."""
     needed = []
     for username in usernames:
         path = avatar_file(username)
@@ -222,7 +222,9 @@ def remove_thumb(name):
         (POST_DIR / name).unlink()
     except OSError:
         pass
-        def check_profiles():
+
+
+def check_profiles():
     if not check_lock.acquire(blocking=False):
         logger.warning("A profile check is already running")
         return None
@@ -394,7 +396,9 @@ def start_background_thread():
     )
     thread.start()
     logger.info("Background checker started; interval=%s seconds", CHECK_INTERVAL)
-    @app.route("/")
+
+
+@app.route("/")
 def index():
     return render_template("index.html")
 
@@ -546,4 +550,5 @@ if __name__ == "__main__":
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "5000")),
         debug=False,
-)
+                      )
+    
