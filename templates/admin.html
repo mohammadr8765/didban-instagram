@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <title>مدیریت عکس‌ها | دیدبان اینستاگرام</title>
+  <style>
+    .card{padding:18px;border:1px solid var(--line);background:var(--panel);border-radius:18px;margin-bottom:12px}
+    .card h2{font-size:16px;margin:0 0 8px}
+    .card p{color:var(--muted);font-size:13px;line-height:1.9;margin:0 0 12px}
+    .btn{display:inline-block;text-decoration:none}
+    .nav{display:flex;align-items:center;justify-content:space-between;margin:4px 0 18px}
+    .nav h1{font-size:19px;margin:0}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="nav">
+      <h1>مدیریت عکس پروفایل‌ها</h1>
+      <a class="ghost btn" href="/">← بازگشت</a>
+    </div>
+
+    <section class="card">
+      <h2>وضعیت</h2>
+      <p>از {{ total }} پیج، عکس {{ missing }} تا روی سرور نیست.</p>
+    </section>
+
+    <section class="card">
+      <h2>۱. دریافت عکس‌های ناموجود</h2>
+      <p>فقط عکس پیج‌هایی که فایلشون نیست گرفته می‌شه. این کار از اعتبار Apify مصرف می‌کنه، پس فقط وقتی لازمه بزن.</p>
+      <button id="fetchBtn" class="primary" type="button">دریافت عکس‌ها</button>
+      <p id="fetchMsg" style="margin-top:10px"></p>
+    </section>
+
+    <section class="card">
+      <h2>۲. دانلود همه‌ی عکس‌ها (zip)</h2>
+      <p>این فایل رو دانلود و باز کن، بعد عکس‌ها رو توی GitHub، پوشه‌ی <b>static/avatars</b> آپلود کن تا برای همیشه بمونن.</p>
+      <a class="primary btn" href="/api/avatars.zip">دانلود zip</a>
+    </section>
+  </main>
+  <script>
+    const btn = document.getElementById("fetchBtn");
+    const msg = document.getElementById("fetchMsg");
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "در حال دریافت…";
+      msg.textContent = "";
+      try {
+        const r = await fetch("/api/avatars/fetch", {method: "POST"});
+        const data = await r.json();
+        if (!r.ok || !data.ok) {
+          msg.textContent = data.message || "دریافت ناموفق بود؛ لاگ Render را ببین.";
+        } else {
+          msg.textContent = data.saved + " عکس ذخیره شد؛ " + data.missing_after + " عکس هنوز ناموجوده.";
+        }
+      } catch (e) {
+        msg.textContent = "خطا در اتصال به سرور.";
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "دریافت عکس‌ها";
+      }
+    });
+  </script>
+</body>
+  </html>
