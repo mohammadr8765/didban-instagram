@@ -1,9 +1,16 @@
 const $ = (s) => document.querySelector(s);
 const list = $("#accounts");
+const chipsEl = $("#cats");
 const checkBtn = $("#checkBtn");
 const READ_KEY = "didban_read_v1";
+const CAT_KEY = "didban_cat_v1";
 let installPrompt = null;
 let accountsCache = [];
+let lastData = null;
+let readMapNow = {};
+let categories = {};
+let selectedCat = "all";
+try { selectedCat = localStorage.getItem(CAT_KEY) || "all"; } catch {}
 
 function loadRead() {
   try { return JSON.parse(localStorage.getItem(READ_KEY) || "null"); } catch { return null; }
@@ -14,6 +21,9 @@ function saveRead(map) {
 function latestTs(a) {
   const t = a.latest && a.latest.date_utc ? Date.parse(a.latest.date_utc) : NaN;
   return Number.isNaN(t) ? 0 : t;
+}
+function isNewAcc(a) {
+  return latestTs(a) > readMapNow[a.username];
 }
 function timeText(value) {
   if (!value) return "هنوز بررسی نشده";
@@ -35,6 +45,67 @@ function avatarHtml(a) {
     : "";
   return `<div class="avatar"><span>${letter}</span>${img}</div>`;
 }
+function cardHtml(a) {
+  const isNew = isNewAcc(a);
+  const isError = a.status === "error";
+  const detail = isError ? "بررسی ناموفق بود؛ بعداً دوباره امتحان کن." :
+    (a.latest ? ("آخرین محتوای قابل‌شناسایی: " + timeText(a.latest.date_utc)) :
+     (a.initialized ? "محتوای قابل‌شناسایی پیدا نشد." : "در انتظار بررسی اولیه…"));
+  return `<article class="account ${isNew ? "is-new" : ""}">
+    <span class="status-dot ${isNew ? "new" : (isError ? "error" : "")}" title="${isNew ? "محتوای جدید" : (isError ? "خطای بررسی" : "بدون مورد جدید")}"></span>
+    ${avatarHtml(a)}
+    <div class="account-info">
+      <div class="handle">@${escapeHtml(a.username)}</div>
+      <div class="subline">${escapeHtml(detail)}</div>
+    </div>
+    <div class="actions">
+      ${isNew ? `<button class="clear-btn" data-clear="${escapeHtml(a.username)}">خواندم</button>` : ""}
+      <a class="open-link" href="${escapeHtml(a.url)}" target="_blank" rel="noopener noreferrer">باز کردن ↗</a>
+    </div>
+  </article>`;
+}
+async function loadCategories() {
+  try {
+    const r = await fetch("/static/categories.json?t=" + Date.now(), {cache:"no-store"});
+    if (!r.ok) throw new Error("cats");
+    const data = await r.json();
+    if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+    const clean = {};
+    Object.keys(data).forEach(k => { clean[k] = Array.isArray(data[k]) ? data[k] : []; });
+    return clean;
+  } catch {
+    return categories;
+  }
+}
+function render() {
+  if (!lastData) return;
+  const accs = lastData.accounts;
+  const names = Object.keys(categories);
+
+  if (selectedCat !== "all" && !categories[selectedCat]) selectedCat = "all";
+
+  const chips = [{key: "all", label: "همه", users: null}].concat(
+    names.map(n => ({key: n, label: n, users: new Set(categories[n].map(u => String(u).toLowerCase()))}))
+  );
+
+  if (names.length === 0) {
+    chipsEl.classList.add("hidden");
+    chipsEl.innerHTML = "";
+  } else {
+    chipsEl.classList.remove("hidden");
+    chipsEl.innerHTML = chips.map(c => {
+      const inCat = c.users ? accs.filter(a => c.users.has(a.username.toLowerCase())) : accs;
+      const hasNew = inCat.some(isNewAcc);
+      return `<button class="chip ${c.key === selectedCat ? "on" : ""}" data-cat="${escapeHtml(c.key)}" type="button">${escapeHtml(c.label)}${hasNew ? '<span class="chip-dot"></span>' : ""}</button>`;
+    }).join("");
+  }
+
+  const sel = chips.find(c => c.key === selectedCat) || chips[0];
+  const shown = sel.users ? accs.filter(a => sel.users.has(a.username.toLowerCase())) : accs;
+  list.innerHTML = shown.length
+    ? shown.map(cardHtml).join("")
+    : '<div class="empty">هنوز پیجی برای این دسته مشخص نشده.</div>';
+}
 async function loadStatus() {
   try {
     const response = await fetch("/api/status", {cache:"no-store"});
@@ -52,29 +123,14 @@ async function loadStatus() {
       }
     });
     saveRead(readMap);
+    readMapNow = readMap;
+    categories = await loadCategories();
+    lastData = data;
 
     $("#accountCount").textContent = new Intl.NumberFormat("fa-IR").format(data.accounts.length);
     $("#lastCheck").textContent = data.last_check ? timeText(data.last_check) : "هنوز بررسی اولیه انجام نشده";
     $("#statusLine").textContent = data.last_error ? "بعضی پیج‌ها بررسی نشدند؛ اینستاگرام ممکن است محدودیت گذاشته باشد." : "اتصال داشبورد برقرار است.";
-    list.innerHTML = data.accounts.map(a => {
-      const isNew = latestTs(a) > readMap[a.username];
-      const isError = a.status === "error";
-      let detail = isError ? "بررسی ناموفق بود؛ بعداً دوباره امتحان کن." :
-        (a.latest ? ("آخرین محتوای قابل‌شناسایی: " + timeText(a.latest.date_utc)) :
-         (a.initialized ? "محتوای قابل‌شناسایی پیدا نشد." : "در انتظار بررسی اولیه…"));
-      return `<article class="account ${isNew ? "is-new" : ""}">
-        <span class="status-dot ${isNew ? "new" : (isError ? "error" : "")}" title="${isNew ? "محتوای جدید" : (isError ? "خطای بررسی" : "بدون مورد جدید")}"></span>
-        ${avatarHtml(a)}
-        <div class="account-info">
-          <div class="handle">@${escapeHtml(a.username)}</div>
-          <div class="subline">${escapeHtml(detail)}</div>
-        </div>
-        <div class="actions">
-          ${isNew ? `<button class="clear-btn" data-clear="${escapeHtml(a.username)}">خواندم</button>` : ""}
-          <a class="open-link" href="${escapeHtml(a.url)}" target="_blank" rel="noopener noreferrer">باز کردن ↗</a>
-        </div>
-      </article>`;
-    }).join("");
+    render();
   } catch (e) {
     $("#statusLine").textContent = "به سرور داشبورد وصل نشدیم.";
     list.innerHTML = '<div class="empty">سرور در دسترس نیست. مطمئن شو برنامه روی رایانه/سرور اجراست.</div>';
@@ -92,6 +148,14 @@ checkBtn.addEventListener("click", async () => {
   } finally {
     checkBtn.disabled = false; checkBtn.textContent = "بررسی دوباره";
   }
+});
+chipsEl.addEventListener("touchstart", (e) => e.stopPropagation(), {passive: true});
+chipsEl.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-cat]");
+  if (!btn) return;
+  selectedCat = btn.dataset.cat;
+  try { localStorage.setItem(CAT_KEY, selectedCat); } catch {}
+  render();
 });
 list.addEventListener("click", async (event) => {
   const btn = event.target.closest("[data-clear]");
