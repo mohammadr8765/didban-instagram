@@ -1,3 +1,4 @@
+import io
 import json
 import logging
 import os
@@ -6,10 +7,11 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, send_file
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_FILE = APP_DIR / "data.json"
@@ -26,8 +28,9 @@ CHECK_INTERVAL = max(3600, int(os.getenv("CHECK_INTERVAL_SECONDS", "86400")))
 LOOKBACK = os.getenv("LOOKBACK", "2 days")
 MAX_POSTS_PER_PROFILE = int(os.getenv("MAX_POSTS_PER_PROFILE", "5"))
 
-# Profile pictures are downloaded once to our own server (Instagram links
-# expire) and only fetched again if the file is missing.
+# Profile pictures live in static/avatars inside the GitHub repo, so they come
+# back with every deploy. They are NEVER fetched automatically; only the
+# "fetch missing" button on /admin downloads the ones that are missing.
 AVATAR_DIR = APP_DIR / "static" / "avatars"
 
 # Thumbnails of each profile's latest post (downloaded directly from the
@@ -352,12 +355,7 @@ def check_profiles():
             errors.append(f"{error_items} profile(s) returned an error from Apify")
         successes = len(usernames)
         logger.info("Check finished: %s profiles, %s errors", successes, len(errors))
-        result = finish(errors, successes)
-        try:
-            refresh_avatars(usernames)
-        except Exception:
-            logger.exception("Avatar refresh crashed")
-        return result
+        return finish(errors, successes)
     finally:
         check_lock.release()
 
@@ -402,6 +400,52 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/admin")
+def admin():
+    usernames = accounts()
+    missing = [u for u in usernames if not avatar_url(u)]
+    return render_template(
+        "admin.html", total=len(usernames), missing=len(missing)
+    )
+
+
+@app.post("/api/avatars/fetch")
+def api_avatars_fetch():
+    if not APIFY_TOKEN:
+        return jsonify({"ok": False, "message": "APIFY_TOKEN تنظیم نشده."}), 400
+    if not check_lock.acquire(blocking=False):
+        return jsonify({"ok": False, "message": "یک بررسی در حال اجراست."}), 409
+    try:
+        usernames = accounts()
+        before = len([u for u in usernames if not avatar_url(u)])
+        refresh_avatars(usernames)
+        after = len([u for u in usernames if not avatar_url(u)])
+    finally:
+        check_lock.release()
+    return jsonify({
+        "ok": True,
+        "missing_before": before,
+        "missing_after": after,
+        "saved": before - after,
+    })
+
+
+@app.get("/api/avatars.zip")
+def api_avatars_zip():
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        if AVATAR_DIR.exists():
+            for path in sorted(AVATAR_DIR.glob("*.jpg")):
+                archive.write(path, path.name)
+    buffer.seek(0)
+    return send_file(
+        buffer,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name="avatars.zip",
+    )
+
+
 @app.route("/explore")
 def explore():
     return render_template("explore.html")
@@ -425,82 +469,4 @@ def api_status():
                 "checked_at": None,
             },
         )
-        item = {k: v for k, v in entry.items() if k != "seen"}
-        item["avatar"] = avatar_url(username)
-        latest = item.get("latest")
-        if latest:
-            latest = dict(latest)
-            thumb = latest.pop("thumb", None)
-            if thumb and (POST_DIR / thumb).exists():
-                latest["thumb_url"] = f"/static/posts/{thumb}"
-            else:
-                latest["thumb_url"] = None
-            item["latest"] = latest
-        result.append(item)
-    return jsonify({
-        "accounts": result,
-        "last_check": data.get("last_check"),
-        "last_error": data.get("last_error"),
-        "last_success_count": data.get("last_success_count", 0),
-        "last_error_count": data.get("last_error_count", 0),
-        "rate_limited": data.get("rate_limited", False),
-        "check_interval_seconds": CHECK_INTERVAL,
-    })
-
-
-@app.post("/api/check")
-def api_check():
-    data = check_profiles()
-    if data is None:
-        return jsonify({
-            "ok": False,
-            "message": "بررسی دیگری در حال اجراست؛ کمی صبر کنید.",
-        }), 409
-
-    successes = data.get("last_success_count", 0)
-    errors = data.get("last_error_count", 0)
-    if successes == 0 and errors > 0:
-        return jsonify({
-            "ok": False,
-            "message": "بررسی ناموفق بود؛ جزئیات را در Render Logs ببینید.",
-            "last_check": data.get("last_check"),
-            "successes": successes,
-            "errors": errors,
-            "rate_limited": data.get("rate_limited", False),
-        }), 502
-
-    return jsonify({
-        "ok": True,
-        "last_check": data.get("last_check"),
-        "successes": successes,
-        "errors": errors,
-        "rate_limited": data.get("rate_limited", False),
-    })
-
-
-@app.post("/api/clear/<username>")
-def api_clear(username):
-    if username not in accounts():
-        return jsonify({"ok": False, "error": "Unknown account"}), 404
-    with state_lock:
-        data = load_data()
-        if username in data.get("profiles", {}):
-            data["profiles"][username]["has_new"] = False
-            save_data(data)
-    return jsonify({"ok": True})
-
-
-@app.get("/manifest.json")
-def manifest():
-    return app.send_static_file("manifest.json")
-
-
-# Also starts when the app is launched by Gunicorn.
-start_background_thread()
-
-if __name__ == "__main__":
-    app.run(
-        host=os.getenv("HOST", "127.0.0.1"),
-        port=int(os.getenv("PORT", "5000")),
-        debug=False,
-    )
+        item = {k: v for k, v in
