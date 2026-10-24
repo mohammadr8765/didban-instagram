@@ -364,20 +364,21 @@ def check_profiles():
 
 
 def background_loop():
-    # Wait briefly after startup, then check whenever the last check is old.
+    # Never checks right after startup or deploy (no saved data yet).
+    # The first check after a deploy is done manually with the button; after
+    # that, a check runs automatically once the last one is older than
+    # CHECK_INTERVAL.
     time.sleep(15)
     while True:
         try:
             last = load_data().get("last_check")
-            due = True
             if last:
                 age = (
                     datetime.now(timezone.utc) - datetime.fromisoformat(last)
                 ).total_seconds()
-                due = age >= CHECK_INTERVAL
-            if due:
-                logger.info("Starting scheduled profile check")
-                check_profiles()
+                if age >= CHECK_INTERVAL:
+                    logger.info("Starting scheduled profile check")
+                    check_profiles()
         except Exception:
             logger.exception("Scheduled profile check crashed")
         time.sleep(600)
@@ -550,5 +551,5 @@ if __name__ == "__main__":
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "5000")),
         debug=False,
-                      )
-    
+)
+                         
