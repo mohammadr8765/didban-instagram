@@ -42,11 +42,19 @@
       if (x === "sidecar") return "آلبوم";
       return "";
     }
+    function loadRead() {
+      try { return JSON.parse(localStorage.getItem("didban_read_v1") || "{}") || {}; } catch { return {}; }
+    }
+    function ts(a) {
+      const t = a.latest && a.latest.date_utc ? Date.parse(a.latest.date_utc) : NaN;
+      return Number.isNaN(t) ? 0 : t;
+    }
     async function load() {
       try {
         const r = await fetch("/api/status", {cache: "no-store"});
         if (!r.ok) throw new Error("status");
         const data = await r.json();
+        const readMap = loadRead();
         const withPost = data.accounts
           .filter(a => a.latest && a.latest.url)
           .sort((a, b) => String(b.latest.date_utc || "").localeCompare(String(a.latest.date_utc || "")));
@@ -54,13 +62,14 @@
         $("#grid").innerHTML = withPost.map(a => {
           const l = a.latest;
           const badge = typeLabel(l.typename);
+          const isNew = readMap[a.username] !== undefined && ts(a) > readMap[a.username];
           const thumb = l.thumb_url
             ? `<img class="thumb" src="${esc(l.thumb_url)}" alt="" loading="lazy" onerror="this.remove()">`
             : "";
           return `<a class="tile" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.caption || "")}">
             <div class="ph">${esc((a.username || "?").charAt(0).toUpperCase())}</div>
             ${thumb}
-            ${a.has_new ? '<span class="dot"></span>' : ""}
+            ${isNew ? '<span class="dot"></span>' : ""}
             ${badge ? `<span class="badge">${badge}</span>` : ""}
             <div class="shade">@${esc(a.username)}</div>
           </a>`;
