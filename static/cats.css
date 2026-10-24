@@ -1,0 +1,21 @@
+.cats{
+  display:flex;gap:8px;overflow-x:auto;padding:2px 2px 12px;margin:0 -2px 4px;
+  scrollbar-width:none;-webkit-overflow-scrolling:touch;
+}
+.cats::-webkit-scrollbar{display:none}
+.cats.hidden{display:none}
+.chip{
+  flex:0 0 auto;font:inherit;font-size:12.5px;font-weight:700;white-space:nowrap;
+  color:var(--muted);background:var(--card);border:1px solid var(--line);
+  border-radius:999px;padding:8px 15px;cursor:pointer;transition:all .2s;
+}
+.chip:active{transform:scale(.96)}
+.chip.on{
+  color:#fff;background:var(--grad);border-color:transparent;
+  box-shadow:0 8px 20px -10px rgba(196,91,255,.8);
+}
+.chip-dot{
+  display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--red);
+  margin-inline-start:7px;vertical-align:middle;animation:pulse 1.8s infinite;
+}
+.chip.on .chip-dot{animation:none;box-shadow:0 0 0 2px #fff}
