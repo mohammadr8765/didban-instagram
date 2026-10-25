@@ -37,6 +37,10 @@ AVATAR_DIR = APP_DIR / "static" / "avatars"
 # Instagram CDN, so this costs no Apify credit).
 POST_DIR = APP_DIR / "static" / "posts"
 
+# Names of avatar files downloaded since the last deploy (so /admin can offer
+# a zip with only the new ones). The file disappears with the next deploy.
+NEW_AVATARS_FILE = APP_DIR / "avatars_new.json"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -174,6 +178,7 @@ def refresh_avatars(usernames):
 
     wanted = {u.lower(): u for u in needed}
     saved = 0
+    saved_files = []
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -191,8 +196,15 @@ def refresh_avatars(usernames):
             if content:
                 avatar_file(username).write_bytes(content)
                 saved += 1
+                saved_files.append(avatar_file(username).name)
         except Exception:
             logger.exception("Avatar download failed: %s", username)
+    if saved_files:
+        previous = read_json(NEW_AVATARS_FILE, [])
+        if not isinstance(previous, list):
+            previous = []
+        merged = sorted(set(previous) | set(saved_files))
+        write_json(NEW_AVATARS_FILE, merged)
     logger.info("Avatars saved: %s of %s", saved, len(needed))
 
 
@@ -404,12 +416,27 @@ def index():
     return render_template("index.html")
 
 
+def new_avatar_files():
+    names = read_json(NEW_AVATARS_FILE, [])
+    if not isinstance(names, list):
+        return []
+    result = []
+    for name in names:
+        path = AVATAR_DIR / Path(str(name)).name
+        if path.exists() and path.stat().st_size > 0:
+            result.append(path)
+    return result
+
+
 @app.route("/admin")
 def admin():
     usernames = accounts()
     missing = [u for u in usernames if not avatar_url(u)]
     return render_template(
-        "admin.html", total=len(usernames), missing=len(missing)
+        "admin.html",
+        total=len(usernames),
+        missing=len(missing),
+        new_count=len(new_avatar_files()),
     )
 
 
@@ -447,6 +474,21 @@ def api_avatars_zip():
         mimetype="application/zip",
         as_attachment=True,
         download_name="avatars.zip",
+    )
+
+
+@app.get("/api/avatars-new.zip")
+def api_avatars_new_zip():
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in new_avatar_files():
+            archive.write(path, path.name)
+    buffer.seek(0)
+    return send_file(
+        buffer,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name="avatars-new.zip",
     )
 
 
@@ -552,4 +594,4 @@ if __name__ == "__main__":
         port=int(os.getenv("PORT", "5000")),
         debug=False,
 )
-                         
+        
