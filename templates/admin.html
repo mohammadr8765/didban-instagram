@@ -36,9 +36,15 @@
     </section>
 
     <section class="card">
-      <h2>۲. دانلود همه‌ی عکس‌ها (zip)</h2>
-      <p>این فایل رو دانلود و باز کن، بعد عکس‌ها رو توی GitHub، پوشه‌ی <b>static/avatars</b> آپلود کن تا برای همیشه بمونن.</p>
-      <a class="primary btn" href="/api/avatars.zip">دانلود zip</a>
+      <h2>۲. دانلود فقط عکس‌های جدید (zip)</h2>
+      <p>{{ new_count }} عکس جدید از آخرین دیپلوی تا الان گرفته شده. این فایل فقط همین‌ها رو داره؛ باز کن و عکس‌ها رو توی GitHub، پوشه‌ی <b>static/avatars</b> آپلود کن.</p>
+      <a class="primary btn" href="/api/avatars-new.zip">دانلود عکس‌های جدید</a>
+    </section>
+
+    <section class="card">
+      <h2>۳. دانلود همه‌ی عکس‌ها (zip)</h2>
+      <p>اگه خواستی از همه‌ی عکس‌های روی سرور نسخه‌ی کامل داشته باشی.</p>
+      <a class="ghost btn" href="/api/avatars.zip">دانلود همه</a>
     </section>
   </main>
   <script>
@@ -65,4 +71,4 @@
     });
   </script>
 </body>
-  </html>
+</html>
