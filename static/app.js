@@ -111,6 +111,7 @@ async function loadStatus() {
     const response = await fetch("/api/status", {cache:"no-store"});
     if (!response.ok) throw new Error("status");
     const data = await response.json();
+    if (window.Didban) Didban.merge(data);
     accountsCache = data.accounts;
 
     let readMap = loadRead();
@@ -139,7 +140,19 @@ async function loadStatus() {
 checkBtn.addEventListener("click", async () => {
   checkBtn.disabled = true; checkBtn.textContent = "در حال بررسی…";
   try {
-    const r = await fetch("/api/check", {method:"POST"});
+    const body = {};
+    if (window.Didban) {
+      const last = Didban.lastCheck();
+      if (last) {
+        const days = Math.ceil((Date.now() - Date.parse(last)) / 86400000) + 1;
+        if (days > 2) body.since_days = Math.min(days, 14);
+      }
+    }
+    const r = await fetch("/api/check", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    });
     if (!r.ok) throw new Error("check");
     toast("بررسی تمام شد؛ وضعیت فهرست به‌روز شد.");
     await loadStatus();
@@ -182,3 +195,4 @@ if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
 }
 loadStatus();
 setInterval(loadStatus, 60000);
+                     
