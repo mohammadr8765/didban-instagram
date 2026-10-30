@@ -11,7 +11,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, send_file
+from flask import Flask, jsonify, render_template, request, send_file
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_FILE = APP_DIR / "data.json"
@@ -114,7 +114,7 @@ def profile_url(username):
     return f"https://www.instagram.com/{username}/"
 
 
-def fetch_from_apify(usernames, details=False):
+def fetch_from_apify(usernames, details=False, lookback=None):
     """Run the Apify Instagram scraper once for all profiles and return items."""
     if details:
         payload = {
@@ -127,7 +127,7 @@ def fetch_from_apify(usernames, details=False):
             "directUrls": [profile_url(u) for u in usernames],
             "resultsType": "posts",
             "resultsLimit": MAX_POSTS_PER_PROFILE,
-            "onlyPostsNewerThan": LOOKBACK,
+            "onlyPostsNewerThan": lookback or LOOKBACK,
             "addParentData": False,
         }
     url = (
@@ -236,7 +236,7 @@ def remove_thumb(name):
         pass
 
 
-def check_profiles():
+def check_profiles(lookback=None):
     if not check_lock.acquire(blocking=False):
         logger.warning("A profile check is already running")
         return None
@@ -260,7 +260,7 @@ def check_profiles():
             return finish([msg], 0)
 
         try:
-            items = fetch_from_apify(usernames)
+            items = fetch_from_apify(usernames, lookback=lookback)
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="ignore")[:300]
             logger.error("Apify HTTP %s: %s", exc.code, body)
@@ -540,7 +540,17 @@ def api_status():
 
 @app.post("/api/check")
 def api_check():
-    data = check_profiles()
+    # The phone tells us how many days ago its last known check was, so posts
+    # published while the server had lost its data are not missed.
+    lookback = None
+    body = request.get_json(silent=True) or {}
+    try:
+        days = int(body.get("since_days", 0))
+        if days > 2:
+            lookback = f"{min(days, 14)} days"
+    except (TypeError, ValueError):
+        lookback = None
+    data = check_profiles(lookback=lookback)
     if data is None:
         return jsonify({
             "ok": False,
@@ -593,5 +603,5 @@ if __name__ == "__main__":
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "5000")),
         debug=False,
-)
-        
+    )
+    
