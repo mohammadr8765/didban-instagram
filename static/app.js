@@ -10,6 +10,7 @@ let lastData = null;
 let readMapNow = {};
 let categories = {};
 let selectedCat = "all";
+let lastCheckIso = null;
 try { selectedCat = localStorage.getItem(CAT_KEY) || "all"; } catch {}
 
 function loadRead() {
@@ -24,6 +25,22 @@ function latestTs(a) {
 }
 function isNewAcc(a) {
   return latestTs(a) > readMapNow[a.username];
+}
+function elapsedText() {
+  if (!lastCheckIso) return "";
+  const ms = Date.now() - Date.parse(lastCheckIso);
+  if (Number.isNaN(ms) || ms < 0) return "";
+  const totalMin = Math.floor(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  const nf = new Intl.NumberFormat("fa-IR");
+  if (totalMin < 1) return "همین الان بررسی شده";
+  if (h === 0) return nf.format(m) + " دقیقه از آخرین بررسی گذشته";
+  return nf.format(h) + " ساعت و " + nf.format(m) + " دقیقه از آخرین بررسی گذشته";
+}
+function updateElapsed() {
+  const el = $("#elapsed");
+  if (el) el.textContent = elapsedText();
 }
 function timeText(value) {
   if (!value) return "هنوز بررسی نشده";
@@ -130,6 +147,8 @@ async function loadStatus() {
 
     $("#accountCount").textContent = new Intl.NumberFormat("fa-IR").format(data.accounts.length);
     $("#lastCheck").textContent = data.last_check ? timeText(data.last_check) : "هنوز بررسی اولیه انجام نشده";
+    lastCheckIso = data.last_check || null;
+    updateElapsed();
     $("#statusLine").textContent = data.last_error ? "بعضی پیج‌ها بررسی نشدند؛ اینستاگرام ممکن است محدودیت گذاشته باشد." : "اتصال داشبورد برقرار است.";
     render();
   } catch (e) {
@@ -143,10 +162,7 @@ checkBtn.addEventListener("click", async () => {
     const body = {};
     if (window.Didban) {
       const last = Didban.lastCheck();
-      if (last) {
-        const days = Math.ceil((Date.now() - Date.parse(last)) / 86400000) + 1;
-        if (days > 2) body.since_days = Math.min(days, 14);
-      }
+      if (last) body.since_iso = last;
     }
     const r = await fetch("/api/check", {
       method: "POST",
@@ -193,6 +209,12 @@ $("#installBtn").addEventListener("click", async () => {
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
   window.addEventListener("load", () => navigator.serviceWorker.register("/static/sw.js").catch(()=>{}));
 }
+// The "time since last check" is computed from the clock each time, so it is
+// always correct after a refresh or after coming back to the app.
+setInterval(updateElapsed, 15000);
+document.addEventListener("visibilitychange", updateElapsed);
+window.addEventListener("focus", updateElapsed);
+window.addEventListener("pageshow", updateElapsed);
 loadStatus();
 setInterval(loadStatus, 60000);
-                     
+    
