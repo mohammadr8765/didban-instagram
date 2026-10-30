@@ -79,6 +79,7 @@
         const r = await fetch("/api/status", {cache: "no-store"});
         if (!r.ok) throw new Error("status");
         const data = await r.json();
+        if (window.Didban) Didban.merge(data);
         const readMap = loadRead();
         const withPost = data.accounts
           .filter(a => a.latest && a.latest.url)
@@ -88,8 +89,9 @@
           const l = a.latest;
           const badge = typeLabel(l.typename);
           const isNew = readMap[a.username] !== undefined && ts(a) > readMap[a.username];
-          const thumb = l.thumb_url
-            ? `<img class="thumb" src="${esc(l.thumb_url)}" alt="" loading="lazy" onerror="this.remove()">`
+          const src = l.thumb_data || l.thumb_url;
+          const thumb = src
+            ? `<img class="thumb" src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">`
             : "";
           return `<a class="tile" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.caption || "")}">
             <div class="ph">${esc((a.username || "?").charAt(0).toUpperCase())}</div>
@@ -109,6 +111,7 @@
     }
     load();
   </script>
+  <script src="/static/cache.js?v=1"></script>
   <script src="/static/swipe.js?v=2"></script>
 </body>
 </html>
