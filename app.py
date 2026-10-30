@@ -8,7 +8,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
@@ -112,6 +112,32 @@ def save_data(data):
 
 def profile_url(username):
     return f"https://www.instagram.com/{username}/"
+
+
+LOOKBACK_BUFFER_HOURS = 2
+LOOKBACK_MAX_DAYS = 14
+
+
+def lookback_since(iso_text):
+    """Turn a last-check time into an Apify 'newer than' value.
+
+    Goes back LOOKBACK_BUFFER_HOURS before that time (a small safety margin),
+    but never further than LOOKBACK_MAX_DAYS. Returns None if unusable.
+    """
+    try:
+        t = datetime.fromisoformat(str(iso_text).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    t = t.astimezone(timezone.utc) - timedelta(hours=LOOKBACK_BUFFER_HOURS)
+    now = datetime.now(timezone.utc)
+    oldest = now - timedelta(days=LOOKBACK_MAX_DAYS)
+    if t < oldest:
+        t = oldest
+    if t > now:
+        t = now - timedelta(hours=LOOKBACK_BUFFER_HOURS)
+    return t.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def fetch_from_apify(usernames, details=False, lookback=None):
@@ -244,6 +270,8 @@ def check_profiles(lookback=None):
         data = load_data()
         profiles = data.setdefault("profiles", {})
         usernames = accounts()
+        if lookback is None:
+            lookback = lookback_since(data.get("last_check"))
 
         def finish(errors, successes, rate_limited=False):
             data["last_check"] = now_utc()
@@ -540,16 +568,10 @@ def api_status():
 
 @app.post("/api/check")
 def api_check():
-    # The phone tells us how many days ago its last known check was, so posts
-    # published while the server had lost its data are not missed.
-    lookback = None
+    # The phone sends the time of its last known check, so posts published
+    # while the server had lost its data are not missed.
     body = request.get_json(silent=True) or {}
-    try:
-        days = int(body.get("since_days", 0))
-        if days > 2:
-            lookback = f"{min(days, 14)} days"
-    except (TypeError, ValueError):
-        lookback = None
+    lookback = lookback_since(body.get("since_iso")) if body.get("since_iso") else None
     data = check_profiles(lookback=lookback)
     if data is None:
         return jsonify({
@@ -590,18 +612,4 @@ def api_clear(username):
     return jsonify({"ok": True})
 
 
-@app.get("/manifest.json")
-def manifest():
-    return app.send_static_file("manifest.json")
-
-
-# Also starts when the app is launched by Gunicorn.
-start_background_thread()
-
-if __name__ == "__main__":
-    app.run(
-        host=os.getenv("HOST", "127.0.0.1"),
-        port=int(os.getenv("PORT", "5000")),
-        debug=False,
-    )
-    
+@app.get("/manife
