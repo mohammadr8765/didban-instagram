@@ -85,3 +85,4 @@
     lastCheck: function () { return load().last_check; }
   };
 })();
+  
