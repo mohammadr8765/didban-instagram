@@ -10,6 +10,7 @@ let lastData = null;
 let readMapNow = {};
 let categories = {};
 let selectedCat = "all";
+let viewMode = "list";
 let lastCheckIso = null;
 try { selectedCat = localStorage.getItem(CAT_KEY) || "all"; } catch {}
 
@@ -81,6 +82,40 @@ function cardHtml(a) {
     </div>
   </article>`;
 }
+function typeLabel(t) {
+  const x = String(t || "").toLowerCase();
+  if (x === "video") return "ویدیو";
+  if (x === "sidecar") return "آلبوم";
+  return "";
+}
+function tileHtml(a) {
+  const l = a.latest;
+  const src = l.thumb_data || l.thumb_url;
+  const img = src
+    ? `<img class="thumb" src="${escapeHtml(src)}" alt="" loading="lazy" onerror="this.remove()">`
+    : "";
+  const badge = typeLabel(l.typename);
+  return `<a class="tile" href="${escapeHtml(l.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(l.caption || "")}">
+    <div class="ph">${escapeHtml((a.username || "?").charAt(0).toUpperCase())}</div>
+    ${img}
+    ${isNewAcc(a) ? '<span class="dot"></span>' : ""}
+    ${badge ? `<span class="badge">${badge}</span>` : ""}
+    <div class="shade">@${escapeHtml(a.username)}</div>
+  </a>`;
+}
+function gridHtml(shown) {
+  const withPost = shown
+    .filter(a => a.latest && a.latest.url)
+    .sort((a, b) => String(b.latest.date_utc || "").localeCompare(String(a.latest.date_utc || "")));
+  const missing = shown.length - withPost.length;
+  if (!withPost.length) {
+    return '<div class="empty">هنوز پستی برای نمایش ثبت نشده. بعد از «بررسی دوباره» یا پست جدید پیج‌ها اینجا میاد.</div>';
+  }
+  const note = missing > 0
+    ? `<p class="note">${new Intl.NumberFormat("fa-IR").format(missing)} پیج از این دسته هنوز پستی ثبت‌شده ندارن.</p>`
+    : "";
+  return withPost.map(tileHtml).join("") + note;
+}
 async function loadCategories() {
   try {
     const r = await fetch("/static/categories.json?t=" + Date.now(), {cache:"no-store"});
@@ -113,15 +148,22 @@ function render() {
     chipsEl.innerHTML = chips.map(c => {
       const inCat = c.users ? accs.filter(a => c.users.has(a.username.toLowerCase())) : accs;
       const hasNew = inCat.some(isNewAcc);
-      return `<button class="chip ${c.key === selectedCat ? "on" : ""}" data-cat="${escapeHtml(c.key)}" type="button">${escapeHtml(c.label)}${hasNew ? '<span class="chip-dot"></span>' : ""}</button>`;
+      return `<button class="chip ${c.key === selectedCat ? "on" : ""}" data-cat="${escapeHtml(c.key)}" type="button">${escapeHtml(c.label)}${hasNew ? '<span class="chip-dot"></span>' : ""}${c.key === selectedCat ? `<span class="chip-ic">${viewMode === "grid" ? "▦" : "☰"}</span>` : ""}</button>`;
     }).join("");
   }
 
   const sel = chips.find(c => c.key === selectedCat) || chips[0];
   const shown = sel.users ? accs.filter(a => sel.users.has(a.username.toLowerCase())) : accs;
-  list.innerHTML = shown.length
-    ? shown.map(cardHtml).join("")
-    : '<div class="empty">هنوز پیجی برای این دسته مشخص نشده.</div>';
+  const grid = viewMode === "grid" && shown.length > 0;
+  list.classList.toggle("account-list", !grid);
+  list.classList.toggle("cgrid", grid);
+  if (!shown.length) {
+    list.innerHTML = '<div class="empty">هنوز پیجی برای این دسته مشخص نشده.</div>';
+  } else if (grid) {
+    list.innerHTML = gridHtml(shown);
+  } else {
+    list.innerHTML = shown.map(cardHtml).join("");
+  }
 }
 async function loadStatus() {
   try {
@@ -182,8 +224,13 @@ chipsEl.addEventListener("touchstart", (e) => e.stopPropagation(), {passive: tru
 chipsEl.addEventListener("click", (event) => {
   const btn = event.target.closest("[data-cat]");
   if (!btn) return;
-  selectedCat = btn.dataset.cat;
-  try { localStorage.setItem(CAT_KEY, selectedCat); } catch {}
+  if (btn.dataset.cat === selectedCat) {
+    viewMode = viewMode === "list" ? "grid" : "list";
+  } else {
+    selectedCat = btn.dataset.cat;
+    viewMode = "list";
+    try { localStorage.setItem(CAT_KEY, selectedCat); } catch {}
+  }
   render();
 });
 list.addEventListener("click", async (event) => {
@@ -217,4 +264,4 @@ window.addEventListener("focus", updateElapsed);
 window.addEventListener("pageshow", updateElapsed);
 loadStatus();
 setInterval(loadStatus, 60000);
-    
+  
